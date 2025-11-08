@@ -29,15 +29,41 @@ app.post('/api/search', async (req, res) => {
   let browser = null;
 
   try {
-    // Launch browser with @sparticuz/chromium
+    console.log(`Starting search for: ${searchQuery}`);
+
+    // Launch browser with optimized settings for Render.com
     browser = await puppeteer.launch({
-      args: chromium.args,
+      args: [
+        ...chromium.args,
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu'
+      ],
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(),
       headless: chromium.headless,
+      timeout: 60000  // Increase browser launch timeout
     });
 
     const page = await browser.newPage();
+
+    // Aggressive optimization
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      // Block unnecessary resources
+      const resourceType = request.resourceType();
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        request.abort();
+      } else {
+        request.continue();
+      }
+    });
 
     // Set user agent
     await page.setUserAgent(
@@ -47,16 +73,25 @@ app.post('/api/search', async (req, res) => {
     // Build Qwant URL
     const qwantUrl = `https://www.qwant.com/?q=${encodeURIComponent(searchQuery)}&t=web`;
 
-    console.log(`Searching: ${qwantUrl}`);
+    console.log(`Navigating to: ${qwantUrl}`);
 
-    // Navigate to Qwant
+    // Navigate with relaxed conditions
     await page.goto(qwantUrl, {
-      waitUntil: 'networkidle2',
-      timeout: 30000
+      waitUntil: 'domcontentloaded',  // Less strict than networkidle
+      timeout: 45000
     });
 
-    // Wait for results
-    await page.waitForSelector('.gW4ak span', { timeout: 10000 }).catch(() => null);
+    console.log('Page loaded, waiting for results...');
+
+    // Wait a bit for JS to render
+    await page.waitForTimeout(3000);
+
+    // Try to wait for results, but don't fail if not found
+    try {
+      await page.waitForSelector('.gW4ak span', { timeout: 5000 });
+    } catch (e) {
+      console.log('Selector not found immediately, continuing anyway...');
+    }
 
     // Extract data using Web Scraper selectors
     const result = await page.evaluate(() => {
@@ -76,9 +111,10 @@ app.post('/api/search', async (req, res) => {
     });
 
     await browser.close();
+    browser = null;
 
     if (result.url && result.title) {
-      console.log(`Found: ${result.url}`);
+      console.log(`✅ Found: ${result.url}`);
       return res.json({
         url: result.url,
         title: result.title,
@@ -87,7 +123,7 @@ app.post('/api/search', async (req, res) => {
       });
     }
 
-    console.log('No results found');
+    console.log('⚠️ No results found');
     return res.json({
       url: '',
       title: '',
@@ -97,20 +133,20 @@ app.post('/api/search', async (req, res) => {
 
   } catch (error) {
     if (browser) {
-      await browser.close();
+      await browser.close().catch(() => {});
     }
 
-    console.error('Error:', error.message);
+    console.error('❌ Error:', error.message);
     return res.status(500).json({
       url: '',
       title: '',
       description: '',
-      error: `Errore Puppeteer: ${error.message}`
+      error: `Errore: ${error.message}`
     });
   }
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
