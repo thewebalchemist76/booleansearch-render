@@ -1,7 +1,10 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const chromium = require('@sparticuz/chromium');
+
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -54,7 +57,7 @@ app.post('/api/search', async (req, res) => {
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(),
       headless: chromium.headless,
-      timeout: 60000  // Increase browser launch timeout
+      timeout: 60000
     });
 
     const page = await browser.newPage();
@@ -62,7 +65,6 @@ app.post('/api/search', async (req, res) => {
     // Aggressive optimization
     await page.setRequestInterception(true);
     page.on('request', (request) => {
-      // Block unnecessary resources
       const resourceType = request.resourceType();
       if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
         request.abort();
@@ -83,38 +85,53 @@ app.post('/api/search', async (req, res) => {
 
     // Navigate with relaxed conditions
     await page.goto(qwantUrl, {
-      waitUntil: 'domcontentloaded',  // Less strict than networkidle
+      waitUntil: 'domcontentloaded',
       timeout: 45000
     });
 
     console.log('Page loaded, waiting for results...');
 
-    // Wait a bit for JS to render
-    await page.waitForTimeout(3000);
+    // Wait longer for JS to render
+    await page.waitForTimeout(5000);
 
-    // Try to wait for results, but don't fail if not found
-    try {
-      await page.waitForSelector('.gW4ak span', { timeout: 5000 });
-    } catch (e) {
-      console.log('Selector not found immediately, continuing anyway...');
+    // DEBUG: Get page HTML
+    const html = await page.content();
+    console.log('📄 Page HTML length:', html.length);
+    
+    // Check if we got actual content or a block page
+    if (html.includes('captcha') || html.includes('blocked') || html.length < 5000) {
+      console.log('⚠️ Possible block detected');
     }
 
-    // Extract data using Web Scraper selectors
+    // Extract data with multiple fallback selectors
     const result = await page.evaluate(() => {
-      // Title selector: .gW4ak span
-      const titleElement = document.querySelector('.gW4ak span');
-      const title = titleElement ? titleElement.textContent.trim() : '';
+      // Try multiple selector patterns for title
+      let title = '';
+      let titleElement = document.querySelector('.HhS7p.gW4ak span');
+      if (!titleElement) titleElement = document.querySelector('.gW4ak span');
+      if (!titleElement) titleElement = document.querySelector('[class*="gW4ak"] span');
+      if (!titleElement) titleElement = document.querySelector('div[class*="HhS7p"] span');
+      title = titleElement ? titleElement.textContent.trim() : '';
 
-      // Link selector: .Fqopp a
-      const linkElement = document.querySelector('.Fqopp a');
-      const url = linkElement ? linkElement.href : '';
+      // Try multiple selector patterns for link
+      let url = '';
+      let linkElement = document.querySelector('.Fqopp a.external');
+      if (!linkElement) linkElement = document.querySelector('.Fqopp a[href]');
+      if (!linkElement) linkElement = document.querySelector('a.external[href*="http"]');
+      if (!linkElement) linkElement = document.querySelector('div[data-testid="webResult"] a[href*="http"]');
+      url = linkElement ? linkElement.href : '';
 
-      // Description selector: div.aVNer
-      const descElement = document.querySelector('div.aVNer');
-      const description = descElement ? descElement.textContent.trim() : '';
+      // Description selector
+      let description = '';
+      const descElement = document.querySelector('.aVNer');
+      if (descElement) {
+        description = descElement.textContent.trim();
+      }
 
       return { title, url, description };
     });
+
+    console.log('Extracted result:', result);
 
     await browser.close();
     browser = null;
