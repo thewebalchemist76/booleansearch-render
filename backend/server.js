@@ -7,7 +7,13 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://booleansearch-frontend.onrender.com',  // Metti il tuo URL frontend qui
+    'http://localhost:5173'  // Per sviluppo locale
+  ],
+  credentials: true
+}));
 app.use(express.json());
 
 // Health check
